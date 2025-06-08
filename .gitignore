@@ -1,0 +1,8 @@
+*.txt
+!requirements.txt
+
+*.ipynb
+
+__pycache__/
+
+fish_ekg_analyzer.py
