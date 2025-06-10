@@ -65,9 +65,10 @@ if uploaded_file is not None:
     show_fish1 = st.sidebar.checkbox("Show Fish 1 EKG", value=True)
     show_fish2 = st.sidebar.checkbox("Show Fish 2 EKG", value=True)
     prominence = st.sidebar.slider("Peak prominence multiplier", min_value=0.1, max_value=5.0, value=1.5, step=0.1)
+    distance = st.sidebar.slider("Minimum peak distance (seconds)", min_value=0.15, max_value=3.0, value=0.3) # between 400 BPM and 20 BPM
 
     # Plot function
-    def plot_window(phase, start, window_size, show_fish1, show_fish2, prominence):
+    def plot_window(phase, start, window_size, show_fish1, show_fish2, prominence, distance):
         if phase == 'Pre-Injection':
             df_selected = df_pre
         else:
@@ -87,13 +88,13 @@ if uploaded_file is not None:
         if show_fish1:
             signal_fish1 = df_selected['Channel 3'].iloc[start_idx:start_idx+window_size].values
             plt.plot(time_window, signal_fish1, label='Fish 1 EKG', color='darkgreen')
-            peaks_fish1, _ = find_peaks(signal_fish1, distance=0.3*freq, prominence=prominence*np.std(signal_fish1))
+            peaks_fish1, _ = find_peaks(signal_fish1, distance=distance*freq, prominence=prominence*np.std(signal_fish1))
             plt.plot(time_window[peaks_fish1], signal_fish1[peaks_fish1], 'o', color='crimson', label='Fish 1 Peaks')
 
         if show_fish2:
             signal_fish2 = df_selected['Channel 4'].iloc[start_idx:start_idx+window_size].values
             plt.plot(time_window, signal_fish2, label='Fish 2 EKG', color='magenta')
-            peaks_fish2, _ = find_peaks(signal_fish2, distance=0.3*freq, prominence=prominence*np.std(signal_fish2))
+            peaks_fish2, _ = find_peaks(signal_fish2, distance=distance*freq, prominence=prominence*np.std(signal_fish2))
             plt.plot(time_window[peaks_fish2], signal_fish2[peaks_fish2], 'o', color='deepskyblue', label='Fish 2 Peaks')
 
         plt.xlabel('Time (s)')
@@ -104,7 +105,7 @@ if uploaded_file is not None:
         st.pyplot(plt.gcf())
         plt.close()
 
-    plot_window(phase, start, window_size, show_fish1, show_fish2, prominence)
+    plot_window(phase, start, window_size, show_fish1, show_fish2, prominence, distance)
 
     # Peak stats inputs
     if phase == 'Pre-Injection':
@@ -114,9 +115,8 @@ if uploaded_file is not None:
     st.write("## Peak Statistics")
     start_stat = st.number_input("Start time for stats (s)", min_value=0.0, max_value=float(df_selected['Time (s)'].max()), value=60.0)
     end_stat = st.number_input("End time for stats (s)", min_value=0.0, max_value=float(df_selected['Time (s)'].max()), value=120.0)
-    #prominence_stat = st.slider("Peak prominence multiplier for stats", min_value=0.1, max_value=5.0, value=1.5, step=0.1)
 
-    def get_peak_stats(phase, start, end, prominence):
+    def get_peak_stats(phase, start, end, prominence, distance):
         if phase == 'Pre-Injection':
             df_selected = df_pre
         else:
@@ -130,7 +130,7 @@ if uploaded_file is not None:
         results = []
 
         signal1 = df_window['Channel 3'].values
-        peaks1, _ = find_peaks(signal1, distance=0.3*freq, prominence=prominence*np.std(signal1)) # 0.3 seconds between peaks = 200 bpm max
+        peaks1, _ = find_peaks(signal1, distance=distance*freq, prominence=prominence*np.std(signal1))
         if len(peaks1) > 1:
             peak_times1 = time_vals[peaks1] # find times of crimson points
             rr_intervals1 = np.diff(peak_times1) # difference between consecutive peaks in seconds
@@ -145,7 +145,7 @@ if uploaded_file is not None:
             })
 
         signal2 = df_window['Channel 4'].values
-        peaks2, _ = find_peaks(signal2, distance=0.3*freq, prominence=prominence*np.std(signal2))
+        peaks2, _ = find_peaks(signal2, distance=distance*freq, prominence=prominence*np.std(signal2))
         if len(peaks2) > 1:
             peak_times2 = time_vals[peaks2]
             rr_intervals2 = np.diff(peak_times2)
@@ -161,7 +161,7 @@ if uploaded_file is not None:
 
         return results
 
-    stats = get_peak_stats(phase, start_stat, end_stat, prominence)
+    stats = get_peak_stats(phase, start_stat, end_stat, prominence, distance)
     if stats:
         st.write("### Peak Stats Summary")
         for result in stats:
