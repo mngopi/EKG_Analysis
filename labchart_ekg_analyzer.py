@@ -1,16 +1,18 @@
 import streamlit as st
-st.set_page_config(layout="wide")
 import pandas as pd
 import numpy as np
 from scipy.signal import find_peaks
 import plotly.graph_objects as go
-from io import StringIO
+from io import StringIO, BytesIO
+import zipfile
 
+st.set_page_config(layout="wide")
 st.title("LabChart EKG Analyzer")
 
 @st.cache_data
-def parse_labchart_file(uploaded_file):
-    lines = uploaded_file.getvalue().decode('ISO-8859-1').splitlines()
+def parse_labchart_file(file_bytes):
+    # file_bytes is bytes of .txt file content
+    lines = file_bytes.decode('ISO-8859-1').splitlines()
 
     channel_title_line = next(line for line in lines if line.startswith("ChannelTitle="))
     channel_titles = channel_title_line.replace("ChannelTitle=", "").strip().split('\t')
@@ -41,6 +43,7 @@ def parse_labchart_file(uploaded_file):
 
     return dfs
 
+@st.cache_data
 def find_peaks_channel(signal, freq, prominence, distance, detect_troughs):
     data_to_analyze = -signal if detect_troughs else signal
     peaks, _ = find_peaks(
@@ -50,6 +53,7 @@ def find_peaks_channel(signal, freq, prominence, distance, detect_troughs):
     )
     return peaks
 
+@st.cache_data
 def compute_peak_stats(peaks, time_vals_sec, start_stat, end_stat):
     peak_times = time_vals_sec[peaks]
     mask = (peak_times >= start_stat) & (peak_times < end_stat)
@@ -80,10 +84,31 @@ def time_to_seconds(time):
     except:
         return 0
 
-uploaded_file = st.file_uploader("Select LabChart Text File", type=["txt"])
+uploaded_file = st.file_uploader(
+    "Select LabChart Text File or ZIP containing it",
+    type=["txt", "zip"]
+)
+
+def extract_txt_from_zip(zip_bytes):
+    with zipfile.ZipFile(BytesIO(zip_bytes)) as z:
+        # Find first txt file in zip
+        for filename in z.namelist():
+            if filename.lower().endswith('.txt'):
+                with z.open(filename) as f:
+                    return f.read()
+    return None
 
 if uploaded_file is not None:
-    dfs = parse_labchart_file(uploaded_file)
+    file_bytes = uploaded_file.getvalue()
+    if uploaded_file.type == "application/zip" or uploaded_file.name.endswith('.zip'):
+        file_bytes = extract_txt_from_zip(file_bytes)
+        if file_bytes is None:
+            st.error("No .txt file found inside the uploaded ZIP.")
+            st.stop()
+    # else assume file_bytes is the txt file content directly
+
+    dfs = parse_labchart_file(file_bytes)
+
     if len(dfs) < 2:
         st.error("File does not contain enough data sections (need at least Pre and Post).")
     else:
@@ -98,15 +123,13 @@ if uploaded_file is not None:
         phase = st.sidebar.selectbox("Select phase", ['Pre-Injection', 'Post-Injection'])
         df_selected = df_pre if phase == 'Pre-Injection' else df_post
 
-        max_time = df_selected['Time (s)'].max()
-
         show_fish1 = st.sidebar.checkbox("Show Channel 3 EKG", value='Channel 3' in df_selected.columns)
         show_fish2 = st.sidebar.checkbox("Show Channel 4 EKG", value='Channel 4' in df_selected.columns)
 
         detect_troughs = st.sidebar.checkbox("Detect troughs")
 
-        prominence = st.sidebar.slider("Peak prominence multiplier", min_value=0.1, max_value=7.0, value=1.5, step=0.1)
-        distance = st.sidebar.slider("Minimum peak distance (seconds)", min_value=0.1, max_value=2.0, value=0.3)
+        prominence = st.sidebar.slider("Peak prominence multiplier", 0.1, 7.0, 1.5, 0.1)
+        distance = st.sidebar.slider("Minimum peak distance (seconds)", 0.1, 2.0, 0.3)
 
         time_vals_sec = df_selected['Time (s)'].values
         freq = 1 / (time_vals_sec[1] - time_vals_sec[0]) if len(time_vals_sec) > 1 else 1000
