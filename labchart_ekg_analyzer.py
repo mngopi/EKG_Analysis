@@ -2,14 +2,15 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from scipy.signal import find_peaks
-from io import StringIO, BytesIO
+from io import BytesIO, StringIO
 import zipfile
 import plotly.graph_objects as go
+import tempfile
+import os
 
 st.set_page_config(layout="wide")
 st.title("LabChart EKG Analyzer")
 
-# ZIP file
 def extract_zip(file_bytes):
     if file_bytes[:2] == b'PK':
         with zipfile.ZipFile(BytesIO(file_bytes)) as z:
@@ -19,45 +20,53 @@ def extract_zip(file_bytes):
         return None
     return file_bytes
 
-# Index sections by byte offsets
 @st.cache_data(show_spinner=False)
-def split_sections(file_bytes):
+def split_sections(file_path):
     columns, sections = None, []
     prev_time = None
     section_start = None
 
-    stream = StringIO(file_bytes.decode('ISO-8859-1'))
-    while True:
-        start_pos = stream.tell()
-        line = stream.readline()
-        if not line:
-            break
+    with open(file_path, 'rb') as f:
+        while True:
+            start_pos = f.tell()
+            line = f.readline()
+            if not line:
+                break
 
-        if line.startswith("ChannelTitle="):
-            titles = line.replace("ChannelTitle=", "").strip().split('\t')
-            columns = ['Time (s)'] + titles
-
-        if line and (line[0].isdigit() or line[0] == '.'):
             try:
-                t = float(line.split('\t', 1)[0])
-                if section_start is None:
-                    section_start = start_pos
-                elif prev_time is not None and t < prev_time:
-                    sections.append((section_start, start_pos))
-                    section_start = start_pos
-                prev_time = t
+                decoded_line = line.decode('ISO-8859-1')
             except:
                 continue
 
+            if decoded_line.startswith("ChannelTitle="):
+                titles = decoded_line.replace("ChannelTitle=", "").strip().split('\t')
+                columns = ['Time (s)'] + titles
+
+            if decoded_line and (decoded_line[0].isdigit() or decoded_line[0] == '.'):
+                try:
+                    t = float(decoded_line.split('\t', 1)[0])
+                    if section_start is None:
+                        section_start = start_pos
+                    elif prev_time is not None and t < prev_time:
+                        sections.append((section_start, start_pos))
+                        section_start = start_pos
+                    prev_time = t
+                except:
+                    continue
+
     if section_start is not None:
-        sections.append((section_start, stream.tell()))
+        with open(file_path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            sections.append((section_start, f.tell()))
 
     return columns, sections
 
-# Load one section
-def load_section_df(file_bytes, columns, section_bounds):
+def load_section_df(file_path, columns, section_bounds):
     start, end = section_bounds
-    section_text = file_bytes[start:end].decode('ISO-8859-1')
+    with open(file_path, 'rb') as f:
+        f.seek(start)
+        section_bytes = f.read(end - start)
+    section_text = section_bytes.decode('ISO-8859-1')
     df = pd.read_csv(StringIO(section_text), sep='\t', header=None)
     df.columns = columns[:df.shape[1]]
     keep_cols = [c for c in ['Time (s)', 'Channel 1', 'Channel 3', 'Channel 4'] if c in df.columns]
@@ -66,14 +75,12 @@ def load_section_df(file_bytes, columns, section_bounds):
         df[c] = pd.to_numeric(df[c], errors='coerce')
     return df.dropna(subset=['Time (s)'])
 
-# Detect peaks
 @st.cache_data(show_spinner=False)
 def cached_find_peaks(signal, freq, prom, dist, detect_troughs):
     data = -signal if detect_troughs else signal
     peaks, _ = find_peaks(data, distance=dist*freq, prominence=prom*np.std(signal))
     return peaks
 
-# MM:SS to seconds
 def time_to_seconds(s):
     parts = s.strip().split(':')
     try:
@@ -85,7 +92,6 @@ def time_to_seconds(s):
         return 0
     return 0
 
-
 uploaded_file = st.file_uploader("Upload LabChart Text or ZIP", type=["txt", "zip"])
 if uploaded_file:
     file_bytes = uploaded_file.getvalue()
@@ -94,9 +100,13 @@ if uploaded_file:
         st.error("No .txt file inside ZIP.")
         st.stop()
 
-    if 'columns' not in st.session_state or st.session_state.get('file_bytes') != file_bytes:
-        st.session_state.file_bytes = file_bytes
-        st.session_state.columns, st.session_state.sections = split_sections(file_bytes)
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_file.write(file_bytes)
+        file_path = tmp_file.name
+
+    if 'columns' not in st.session_state or st.session_state.get('file_path') != file_path:
+        st.session_state.file_path = file_path
+        st.session_state.columns, st.session_state.sections = split_sections(file_path)
         st.session_state.last_section_idx = None
 
     columns, sections = st.session_state.columns, st.session_state.sections
@@ -105,7 +115,7 @@ if uploaded_file:
     section_idx = section_labels.index(selected_section)
 
     if st.session_state.get('last_section_idx') != section_idx:
-        st.session_state.df = load_section_df(file_bytes, columns, sections[section_idx])
+        st.session_state.df = load_section_df(file_path, columns, sections[section_idx])
         st.session_state.last_section_idx = section_idx
 
     df = st.session_state.df
