@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from scipy.signal import find_peaks
-from io import BytesIO, StringIO
+from io import StringIO
 import zipfile
 import plotly.graph_objects as go
 import tempfile
@@ -11,14 +11,17 @@ import os
 st.set_page_config(layout="wide")
 st.title("LabChart EKG Analyzer")
 
-def extract_zip(file_bytes):
-    if file_bytes[:2] == b'PK':
-        with zipfile.ZipFile(BytesIO(file_bytes)) as z:
+def extract_zip(file_path):
+    if file_path.lower().endswith(".zip"):
+        with zipfile.ZipFile(file_path) as z:
             for fn in z.namelist():
                 if fn.lower().endswith('.txt'):
-                    return z.read(fn)
+                    with z.open(fn) as extracted_file, tempfile.NamedTemporaryFile(delete=False) as tmp_extracted:
+                        for chunk in extracted_file:
+                            tmp_extracted.write(chunk)
+                        return tmp_extracted.name
         return None
-    return file_bytes
+    return file_path
 
 @st.cache_data(show_spinner=False)
 def split_sections(file_path):
@@ -94,15 +97,15 @@ def time_to_seconds(s):
 
 uploaded_file = st.file_uploader("Upload LabChart Text or ZIP", type=["txt", "zip"])
 if uploaded_file:
-    file_bytes = uploaded_file.getvalue()
-    file_bytes = extract_zip(file_bytes)
-    if file_bytes is None:
-        st.error("No .txt file inside ZIP.")
-        st.stop()
-
     with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-        tmp_file.write(file_bytes)
-        file_path = tmp_file.name
+        for chunk in uploaded_file:
+            tmp_file.write(chunk)
+        uploaded_path = tmp_file.name
+
+    file_path = extract_zip(uploaded_path)
+    if file_path is None:
+        st.error("No .txt file found inside ZIP.")
+        st.stop()
 
     if 'columns' not in st.session_state or st.session_state.get('file_path') != file_path:
         st.session_state.file_path = file_path
