@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from scipy.signal import find_peaks
-from io import StringIO
+from io import BytesIO, StringIO
 import zipfile
 import plotly.graph_objects as go
 import tempfile
@@ -11,17 +11,14 @@ import os
 st.set_page_config(layout="wide")
 st.title("LabChart EKG Analyzer")
 
-def extract_zip(file_path):
-    if file_path.lower().endswith(".zip"):
-        with zipfile.ZipFile(file_path) as z:
+def extract_zip(file_bytes):
+    if file_bytes[:2] == b'PK':
+        with zipfile.ZipFile(BytesIO(file_bytes)) as z:
             for fn in z.namelist():
                 if fn.lower().endswith('.txt'):
-                    with z.open(fn) as extracted_file, tempfile.NamedTemporaryFile(delete=False) as tmp_extracted:
-                        for chunk in extracted_file:
-                            tmp_extracted.write(chunk)
-                        return tmp_extracted.name
+                    return z.read(fn)
         return None
-    return file_path
+    return file_bytes
 
 @st.cache_data(show_spinner=False)
 def split_sections(file_path):
@@ -69,6 +66,10 @@ def load_section_df(file_path, columns, section_bounds):
     with open(file_path, 'rb') as f:
         f.seek(start)
         section_bytes = f.read(end - start)
+
+    #st.sidebar.write(f"Loaded section size: {(end - start) / (1024*1024):.3f} MB")
+    #section_text = section_bytes.decode('ISO-8859-1')
+
     section_text = section_bytes.decode('ISO-8859-1')
     df = pd.read_csv(StringIO(section_text), sep='\t', header=None)
     df.columns = columns[:df.shape[1]]
@@ -97,27 +98,42 @@ def time_to_seconds(s):
 
 uploaded_file = st.file_uploader("Upload LabChart Text or ZIP", type=["txt", "zip"])
 if uploaded_file:
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-        for chunk in uploaded_file:
-            tmp_file.write(chunk)
-        uploaded_path = tmp_file.name
-
-    file_path = extract_zip(uploaded_path)
-    if file_path is None:
-        st.error("No .txt file found inside ZIP.")
+    file_bytes = uploaded_file.getvalue()
+    file_bytes = extract_zip(file_bytes)
+    if file_bytes is None:
+        st.error("No .txt file inside ZIP.")
         st.stop()
 
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_file.write(file_bytes)
+        file_path = tmp_file.name
+
+    #file_size = os.path.getsize(file_path)
+    #st.sidebar.write(f"Temporary file size: {file_size / (1024*1024):.2f} MB")
+
+    # On upload, parse sections
     if 'columns' not in st.session_state or st.session_state.get('file_path') != file_path:
         st.session_state.file_path = file_path
         st.session_state.columns, st.session_state.sections = split_sections(file_path)
-        st.session_state.last_section_idx = None
+        st.session_state.last_section_idx = 0 # FIRST SECTION
+        st.session_state.df = load_section_df(file_path, st.session_state.columns, st.session_state.sections[0])
+
+        if 'cached_peaks' in st.session_state:
+            del st.session_state.cached_peaks
 
     columns, sections = st.session_state.columns, st.session_state.sections
     section_labels = [f"Section {i+1}" for i in range(len(sections))]
-    selected_section = st.sidebar.selectbox("Pick Section", section_labels)
+
+
+    selected_section = st.sidebar.selectbox("Pick Section", section_labels, index=st.session_state.last_section_idx)
     section_idx = section_labels.index(selected_section)
 
-    if st.session_state.get('last_section_idx') != section_idx:
+    # Selecting new section
+    if st.session_state.last_section_idx != section_idx:
+        # Clear previous selection data
+        for key in ['df', 'cached_peaks']:
+            if key in st.session_state:
+                del st.session_state[key]
         st.session_state.df = load_section_df(file_path, columns, sections[section_idx])
         st.session_state.last_section_idx = section_idx
 
@@ -135,7 +151,10 @@ if uploaded_file:
     freq = 1 / (times[1] - times[0]) if len(times) > 1 else 1000
 
     fig = go.Figure()
-    cached_peaks = {}
+
+    if 'cached_peaks' not in st.session_state:
+        st.session_state.cached_peaks = {}
+    cached_peaks = st.session_state.cached_peaks
 
     if show_fish1 and 'Channel 3' in df.columns:
         sig1 = df['Channel 3'].values
